@@ -4,11 +4,12 @@
 CSV columns: first_order_concept,second_order_theme,aggregate_dimension
 Hierarchy is M:1 .. M:1.
 
-Usage: python gioia.py input.csv output.pdf
+Usage: python gioia.py input.csv output.pdf [--mono-enum] [--verbose]
 """
 
+import argparse
 import csv
-import sys
+import time
 from collections import OrderedDict
 
 import matplotlib
@@ -42,19 +43,23 @@ def load(csv_path):
 # ---------------------------------------------------------------------------
 # Text wrapping helpers (measure with matplotlib for accuracy)
 # ---------------------------------------------------------------------------
-def _text_width_pts(s, fontsize, weight):
+def _text_width_pts(s, fontsize, weight, family=None):
     """Width of a string in points (TextPath size is in points)."""
     if not s:
         return 0.0
-    tp = TextPath((0, 0), s, size=fontsize, prop={"weight": weight})
+    prop = {"weight": weight}
+    if family:
+        prop["family"] = family
+    tp = TextPath((0, 0), s, size=fontsize, prop=prop)
     return tp.get_extents().width
 
 
-def _hard_break_word(word, fontsize, weight, max_pts):
+def _hard_break_word(word, fontsize, weight, max_pts, family=None):
     """Break a single word that is wider than max_pts into pieces that fit."""
     pieces, cur = [], ""
     for ch in word:
-        if _text_width_pts(cur + ch, fontsize, weight) <= max_pts or not cur:
+        if _text_width_pts(cur + ch, fontsize, weight, family) <= max_pts \
+                or not cur:
             cur += ch
         else:
             pieces.append(cur)
@@ -64,7 +69,7 @@ def _hard_break_word(word, fontsize, weight, max_pts):
     return pieces
 
 
-def wrap(text, fontsize, weight, max_pts):
+def wrap(text, fontsize, weight, max_pts, family=None):
     """Greedy word wrap to a width given in points. Returns list of lines.
 
     Words wider than max_pts are hard-broken so text never bleeds outside
@@ -76,15 +81,15 @@ def wrap(text, fontsize, weight, max_pts):
     # Pre-split any word too wide to ever fit on one line.
     tokens = []
     for w in words:
-        if _text_width_pts(w, fontsize, weight) > max_pts:
-            tokens.extend(_hard_break_word(w, fontsize, weight, max_pts))
+        if _text_width_pts(w, fontsize, weight, family) > max_pts:
+            tokens.extend(_hard_break_word(w, fontsize, weight, max_pts, family))
         else:
             tokens.append(w)
 
     lines, cur = [], tokens[0]
     for w in tokens[1:]:
         trial = cur + " " + w
-        if _text_width_pts(trial, fontsize, weight) <= max_pts:
+        if _text_width_pts(trial, fontsize, weight, family) <= max_pts:
             cur = trial
         else:
             lines.append(cur)
@@ -98,10 +103,28 @@ def letters(i):
     return chr(ord("A") + (i % 26))
 
 
+class Progress:
+    """Lightweight verbose progress reporter with elapsed timing."""
+
+    def __init__(self, enabled):
+        self.enabled = enabled
+        self.start = time.perf_counter()
+
+    def __call__(self, msg):
+        if self.enabled:
+            elapsed = time.perf_counter() - self.start
+            print(f"[{elapsed:6.2f}s] {msg}", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Main drawing
 # ---------------------------------------------------------------------------
-def draw(dims, out_path):
+def draw(dims, out_path, mono_enum=False, progress=None):
+    if progress is None:
+        progress = Progress(False)
+    # Font family for the first-order concept enumeration prefixes.
+    ENUM_FAMILY = "monospace" if mono_enum else None
+
     # ---- Layout constants (in figure "data" units == points-ish) ----
     FIG_W = 13.0                     # inches
     DPI = 150
@@ -110,7 +133,7 @@ def draw(dims, out_path):
     P1_X, P1_W = 2.0, 34.0           # first-order concepts panel
     P2_X, P2_W = 44.0, 22.0          # second-order themes panel
     P3_X, P3_W = 74.0, 22.0          # aggregate dimensions panel
-    PANEL_PAD = 1.5
+    PANEL_PAD = 3.0                  # horizontal padding inside grey panels
 
     BOX_PAD_X = 1.2                  # horizontal text inset (axis units)
     BLOCK_GAP = 1.6                  # vertical gap between theme-blocks
@@ -130,8 +153,13 @@ def draw(dims, out_path):
     LH_THEME = FS_THEME * LINE_SPACING / PTS_PER_AXIS
     LH_DIM = FS_DIM * LINE_SPACING / PTS_PER_AXIS
 
+    # Extra inset on the right edge of panel-1 boxes (~one lowercase 'm').
+    em_pts = _text_width_pts("m", FS_FOC, "normal", ENUM_FAMILY)
+    BOX_PAD_R_EXTRA = em_pts / PTS_PER_AXIS   # axis units
+
     GREY_PANEL = "#e6e6e6"
     SHADOW = withSimplePatchShadow(offset=(2, -2), alpha=0.35)
+    PAD_INCHES = 2.0 / 2.54          # ~2 cm margin around the cropped diagram
 
     # figure setup (guess height, refine after measuring)
     fig = plt.figure(figsize=(FIG_W, 16), dpi=DPI)
@@ -149,7 +177,9 @@ def draw(dims, out_path):
     def pts_to_axis(pts):
         return pts / PTS_PER_AXIS
 
-    foc_text_pts = text_budget_pts(P1_W, BOX_PAD_X)
+    progress("Measuring text and wrapping labels...")
+    # Panel-1 text budget reserves BOX_PAD_X left + (BOX_PAD_X + one em) right.
+    foc_text_pts = (P1_W - 2 * BOX_PAD_X - BOX_PAD_R_EXTRA) * PTS_PER_AXIS
     theme_text_pts = text_budget_pts(P2_W, BOX_PAD_X)
     # Ovals taper, so reserve extra horizontal padding for panel-3 text.
     dim_text_pts = text_budget_pts(P3_W, BOX_PAD_X + 2.5)
@@ -165,7 +195,8 @@ def draw(dims, out_path):
             foc_lines = []
             for j, c in enumerate(concepts):
                 label = f"{theme_seq}{letters(j)}. {c}"
-                foc_lines.extend(wrap(label, FS_FOC, "normal", foc_text_pts))
+                foc_lines.extend(
+                    wrap(label, FS_FOC, "normal", foc_text_pts, ENUM_FAMILY))
             theme_lines = wrap(theme, FS_THEME, "bold", theme_text_pts)
 
             h_foc = len(foc_lines) * LH_FOC + 1.6
@@ -180,11 +211,12 @@ def draw(dims, out_path):
         blocks.append({"dim": dim, "theme_blocks": dim_blocks})
 
     # ---- Tighten panel 1 to the widest first-order line actually present ----
+    progress("Tightening panel 1 width...")
     all_foc_lines = [ln for grp in blocks for b in grp["theme_blocks"]
                      for ln in b["foc_lines"]]
-    widest_foc_pts = max((_text_width_pts(ln, FS_FOC, "normal")
+    widest_foc_pts = max((_text_width_pts(ln, FS_FOC, "normal", ENUM_FAMILY)
                           for ln in all_foc_lines), default=0.0)
-    needed_p1 = pts_to_axis(widest_foc_pts) + 2 * BOX_PAD_X
+    needed_p1 = pts_to_axis(widest_foc_pts) + 2 * BOX_PAD_X + BOX_PAD_R_EXTRA
     P1_W = min(P1_W, max(needed_p1, 8.0))   # never widen beyond original
 
     # ---- Tighten panel 2: re-wrap themes to the narrowest width that still
@@ -195,6 +227,7 @@ def draw(dims, out_path):
 
     MAX_THEME_LINES = 3
     best_p2 = P2_W
+    progress("Tightening panel 2 width (re-wrapping themes)...")
     # Try progressively narrower panel-2 widths.
     for cand in [P2_W - d for d in range(0, int(P2_W) - 8)]:
         cand_pts = text_budget_pts(cand, BOX_PAD_X)
@@ -219,6 +252,7 @@ def draw(dims, out_path):
             b["h"] = max(h_foc, h_theme)
 
     # ---- Reflow panel x-positions so tightened panels stay evenly spaced ----
+    progress("Laying out panels...")
     LEFT = 2.0
     RIGHT = 98.0
     ARROW_GAP = 8.0           # room between panel 1 and 2 for the grey arrow
@@ -241,10 +275,19 @@ def draw(dims, out_path):
         total_h += DIM_GAP
     total_h += TOP_MARGIN + BOTTOM_MARGIN
 
-    # set y-limits; keep axis units square (1 x-unit == 1 y-unit in inches)
+    # ---- Content extent (used to set axis limits so margins stay uniform) ----
+    content_left = P1_X - PANEL_PAD
+    content_right = P3_X + P3_W + PANEL_PAD
+    content_w = content_right - content_left
+
+    # Map the axes exactly onto the content so bbox_inches="tight" + pad_inches
+    # yields uniform margins (no stray whitespace on any side). Keep 1:1 aspect
+    # so axis x-units and y-units share the same physical scale.
+    ax.set_xlim(content_left, content_right)
     ax.set_ylim(0, total_h)
-    fig_h = max(6.0, total_h * FIG_W / 100.0)
-    fig.set_size_inches(FIG_W, fig_h)
+    fig_w = max(6.0, content_w * FIG_W / 100.0)
+    fig_h = max(4.0, total_h * FIG_W / 100.0)
+    fig.set_size_inches(fig_w, fig_h)
 
     # ---- Panels ----
     panels = [
@@ -260,7 +303,8 @@ def draw(dims, out_path):
                 zorder=5)
 
     # ---- Helper: rounded box with wrapped text (centered or left-aligned) ----
-    def box(x, y_top, w, h, lines, fontsize, weight, line_h, align="center"):
+    def box(x, y_top, w, h, lines, fontsize, weight, line_h, align="center",
+            family=None):
         p = FancyBboxPatch(
             (x, y_top - h), w, h,
             boxstyle="round,pad=0,rounding_size=0.6",
@@ -276,7 +320,8 @@ def draw(dims, out_path):
             tx, ha = x + w / 2, "center"
         for k, ln in enumerate(lines):
             ax.text(tx, start - k * line_h, ln, ha=ha, va="center",
-                    fontsize=fontsize, fontweight=weight, zorder=4)
+                    fontsize=fontsize, fontweight=weight, family=family,
+                    zorder=4)
         return (x, y_top - h, w, h)  # x, y_bottom, w, h
 
     def grey_arrow(x0, y, x1):
@@ -295,6 +340,7 @@ def draw(dims, out_path):
         ax.add_patch(pp)
 
     # ---- Draw content top-down ----
+    progress("Drawing panel-1 and panel-2 boxes...")
     y = total_h - TOP_MARGIN
     dim_centers = []   # (dim_name, y_center, span_top, span_bottom)
 
@@ -306,12 +352,12 @@ def draw(dims, out_path):
             top = y
             # first-order concept box (panel 1) — left-aligned text
             box(P1_X, top, P1_W, h, b["foc_lines"], FS_FOC, "normal",
-                LH_FOC, align="left")
+                LH_FOC, align="left", family=ENUM_FAMILY)
             # second-order theme box (panel 2)
             box(P2_X, top, P2_W, h, b["theme_lines"], FS_THEME, "bold",
                 LH_THEME)
-            # grey arrow from panel1 -> panel2
-            grey_arrow(P1_X + P1_W + 0.5, top - h / 2, P2_X - 0.5)
+            # grey arrow from panel1 -> panel2 (touching both boxes)
+            grey_arrow(P1_X + P1_W, top - h / 2, P2_X)
             theme_y_centers.append(top - h / 2)
             y -= h + BLOCK_GAP
         grp_bottom = y + BLOCK_GAP
@@ -327,6 +373,7 @@ def draw(dims, out_path):
 
     # ---- Draw aggregate dimension ovals + connectors ----
     # All ovals share one width and one height for visual consistency.
+    progress("Sizing aggregate-dimension ovals...")
     dim_text_pts = text_budget_pts(P3_W, BOX_PAD_X + 2.5)
     dim_line_map = {dim: wrap(dim, FS_DIM, "bold", dim_text_pts)
                     for (dim, _, _) in dim_centers}
@@ -334,7 +381,18 @@ def draw(dims, out_path):
     # Height accommodates the wordiest label; kept identical for every oval.
     max_dim_lines = max(len(lines) for lines in dim_line_map.values())
     oval_h = max(max_dim_lines * LH_DIM + 4.0, 8.0)
+    rx, ry = OVAL_W / 2.0, oval_h / 2.0
 
+    def ellipse_point(cx, cy, px, py):
+        """Point where the segment (px,py)->(cx,cy) meets the ellipse edge."""
+        dx, dy = px - cx, py - cy
+        denom = (dx / rx) ** 2 + (dy / ry) ** 2
+        if denom <= 0:
+            return cx, cy
+        t = 1.0 / (denom ** 0.5)   # scale so the point lands on the boundary
+        return cx + dx * t, cy + dy * t
+
+    progress("Drawing ovals and connectors...")
     for (dim, dim_cy, theme_y_centers), grp in zip(dim_centers, blocks):
         dim_lines = dim_line_map[dim]
         cx = P3_X + P3_W / 2
@@ -347,22 +405,39 @@ def draw(dims, out_path):
         for k, ln in enumerate(dim_lines):
             ax.text(cx, start - k * LH_DIM, ln, ha="center", va="center",
                     color="white", fontsize=FS_DIM, fontweight="bold", zorder=4)
-        # connectors: theme right edge -> oval left edge
+        # connectors: panel-2 box right edge -> exact oval boundary (no gap)
+        x_start = P2_X + P2_W
         for ty in theme_y_centers:
-            ax.plot([P2_X + P2_W, P3_X], [ty, dim_cy],
+            ex, ey = ellipse_point(cx, dim_cy, x_start, ty)
+            ax.plot([x_start, ex], [ty, ey],
                     color="black", linewidth=1.0, zorder=2)
 
-    fig.savefig(out_path, dpi=DPI, bbox_inches="tight")
+    progress(f"Saving figure to {out_path}...")
+    fig.savefig(out_path, dpi=DPI, bbox_inches="tight", pad_inches=PAD_INCHES)
     plt.close(fig)
 
 
 def main():
-    if len(sys.argv) != 3:
-        print("Usage: python gioia.py input.csv output.pdf")
-        sys.exit(1)
-    dims = load(sys.argv[1])
-    draw(dims, sys.argv[2])
-    print(f"Wrote {sys.argv[2]}")
+    parser = argparse.ArgumentParser(
+        description="Generate a Gioia-style data structure diagram from a CSV.")
+    parser.add_argument("input", help="input CSV file")
+    parser.add_argument("output", help="output file (e.g. diagram.pdf/.png/.svg)")
+    parser.add_argument(
+        "-m", "--mono-enum", action="store_true",
+        help="render first-order concept text (incl. 1A, 1B ... enumerations) "
+             "in a monospace font")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true",
+        help="print timed progress messages while the diagram is built")
+    args = parser.parse_args()
+
+    progress = Progress(args.verbose)
+    progress(f"Loading {args.input}...")
+    dims = load(args.input)
+    progress("CSV loaded; starting layout...")
+    draw(dims, args.output, mono_enum=args.mono_enum, progress=progress)
+    progress("Done.")
+    print(f"Wrote {args.output}")
 
 
 if __name__ == "__main__":
