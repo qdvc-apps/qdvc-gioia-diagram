@@ -43,20 +43,49 @@ def load(csv_path):
 # ---------------------------------------------------------------------------
 # Text wrapping helpers (measure with matplotlib for accuracy)
 # ---------------------------------------------------------------------------
-def _text_width_px(fig, s, fontsize, weight):
+def _text_width_pts(s, fontsize, weight):
+    """Width of a string in points (TextPath size is in points)."""
+    if not s:
+        return 0.0
     tp = TextPath((0, 0), s, size=fontsize, prop={"weight": weight})
     return tp.get_extents().width
 
 
-def wrap(fig, text, fontsize, weight, max_px):
-    """Greedy word wrap to a pixel width. Returns list of lines."""
+def _hard_break_word(word, fontsize, weight, max_pts):
+    """Break a single word that is wider than max_pts into pieces that fit."""
+    pieces, cur = [], ""
+    for ch in word:
+        if _text_width_pts(cur + ch, fontsize, weight) <= max_pts or not cur:
+            cur += ch
+        else:
+            pieces.append(cur)
+            cur = ch
+    if cur:
+        pieces.append(cur)
+    return pieces
+
+
+def wrap(text, fontsize, weight, max_pts):
+    """Greedy word wrap to a width given in points. Returns list of lines.
+
+    Words wider than max_pts are hard-broken so text never bleeds outside
+    its container.
+    """
     words = text.split()
     if not words:
         return [""]
-    lines, cur = [], words[0]
-    for w in words[1:]:
+    # Pre-split any word too wide to ever fit on one line.
+    tokens = []
+    for w in words:
+        if _text_width_pts(w, fontsize, weight) > max_pts:
+            tokens.extend(_hard_break_word(w, fontsize, weight, max_pts))
+        else:
+            tokens.append(w)
+
+    lines, cur = [], tokens[0]
+    for w in tokens[1:]:
         trial = cur + " " + w
-        if _text_width_px(fig, trial, fontsize, weight) <= max_px:
+        if _text_width_pts(trial, fontsize, weight) <= max_pts:
             cur = trial
         else:
             lines.append(cur)
@@ -106,14 +135,18 @@ def draw(dims, out_path):
     ax.axis("off")
 
     # ---- Measure text -> compute each theme block's line lists & heights ----
-    # width available for wrapped text inside a panel box (pixels)
-    def px_per_axis_x(panel_w_axis):
-        # convert axis-x units to pixels: fig width px * (panel_w/100)
-        return FIG_W * DPI * (panel_w_axis / 100.0)
+    # The x-axis spans 100 units over FIG_W inches (= FIG_W * 72 points).
+    # Convert an available axis-x width into points so wrap() (which measures
+    # glyphs in points via TextPath) is unit-consistent -> no bleed.
+    PTS_PER_AXIS_X = FIG_W * 72.0 / 100.0
 
-    foc_text_px = px_per_axis_x(P1_W) - px_per_axis_x(2 * BOX_PAD_X)
-    theme_text_px = px_per_axis_x(P2_W) - px_per_axis_x(2 * BOX_PAD_X)
-    dim_text_px = px_per_axis_x(P3_W) - px_per_axis_x(2 * BOX_PAD_X)
+    def text_budget_pts(panel_w_axis, pad_axis):
+        return (panel_w_axis - 2 * pad_axis) * PTS_PER_AXIS_X
+
+    foc_text_pts = text_budget_pts(P1_W, BOX_PAD_X)
+    theme_text_pts = text_budget_pts(P2_W, BOX_PAD_X)
+    # Ovals taper, so reserve extra horizontal padding for panel-3 text.
+    dim_text_pts = text_budget_pts(P3_W, BOX_PAD_X + 2.5)
 
     # theme counter is per-second-order-theme index (the "1", "2" ...)
     theme_seq = 0
@@ -126,8 +159,8 @@ def draw(dims, out_path):
             foc_lines = []
             for j, c in enumerate(concepts):
                 label = f"{theme_seq}{letters(j)}. {c}"
-                foc_lines.extend(wrap(fig, label, FS_FOC, "normal", foc_text_px))
-            theme_lines = wrap(fig, theme, FS_THEME, "bold", theme_text_px)
+                foc_lines.extend(wrap(label, FS_FOC, "normal", foc_text_pts))
+            theme_lines = wrap(theme, FS_THEME, "bold", theme_text_pts)
 
             h_foc = len(foc_lines) * LINE_H + 1.6
             h_theme = len(theme_lines) * LINE_H + 1.6
@@ -169,8 +202,8 @@ def draw(dims, out_path):
                 ha="center", va="center", fontsize=FS_HEAD, fontweight="bold",
                 zorder=5)
 
-    # ---- Helper: rounded box with centered wrapped text ----
-    def box(x, y_top, w, h, lines, fontsize, weight):
+    # ---- Helper: rounded box with wrapped text (centered or left-aligned) ----
+    def box(x, y_top, w, h, lines, fontsize, weight, align="center"):
         p = FancyBboxPatch(
             (x, y_top - h), w, h,
             boxstyle="round,pad=0,rounding_size=0.6",
@@ -180,8 +213,12 @@ def draw(dims, out_path):
         cy = y_top - h / 2
         block_h = len(lines) * LINE_H
         start = cy + block_h / 2 - LINE_H / 2
+        if align == "left":
+            tx, ha = x + BOX_PAD_X, "left"
+        else:
+            tx, ha = x + w / 2, "center"
         for k, ln in enumerate(lines):
-            ax.text(x + w / 2, start - k * LINE_H, ln, ha="center", va="center",
+            ax.text(tx, start - k * LINE_H, ln, ha=ha, va="center",
                     fontsize=fontsize, fontweight=weight, zorder=4)
         return (x, y_top - h, w, h)  # x, y_bottom, w, h
 
@@ -210,8 +247,9 @@ def draw(dims, out_path):
         for b in grp["theme_blocks"]:
             h = b["h"]
             top = y
-            # first-order concept box (panel 1)
-            box(P1_X, top, P1_W, h, b["foc_lines"], FS_FOC, "normal")
+            # first-order concept box (panel 1) — left-aligned text
+            box(P1_X, top, P1_W, h, b["foc_lines"], FS_FOC, "normal",
+                align="left")
             # second-order theme box (panel 2)
             box(P2_X, top, P2_W, h, b["theme_lines"], FS_THEME, "bold")
             # grey arrow from panel1 -> panel2
@@ -230,12 +268,18 @@ def draw(dims, out_path):
         y -= DIM_GAP
 
     # ---- Draw aggregate dimension ovals + connectors ----
+    # All ovals share one width and one height for visual consistency.
+    dim_line_map = {dim: wrap(dim, FS_DIM, "bold", dim_text_pts)
+                    for (dim, _, _) in dim_centers}
+    OVAL_W = P3_W - 1.0
+    # Height accommodates the wordiest label; kept identical for every oval.
+    max_dim_lines = max(len(lines) for lines in dim_line_map.values())
+    oval_h = max(max_dim_lines * LINE_H + 4.0, 8.0)
+
     for (dim, dim_cy, theme_y_centers), grp in zip(dim_centers, blocks):
-        dim_lines = wrap(fig, dim, FS_DIM, "bold", dim_text_px)
-        span = theme_y_centers[0] - theme_y_centers[-1]
-        oval_h = max(len(dim_lines) * LINE_H + 3.0, span * 0.6 + 3.0)
+        dim_lines = dim_line_map[dim]
         cx = P3_X + P3_W / 2
-        el = Ellipse((cx, dim_cy), P3_W - 1.0, oval_h,
+        el = Ellipse((cx, dim_cy), OVAL_W, oval_h,
                      facecolor="black", edgecolor="black", zorder=3)
         el.set_path_effects([SHADOW])
         ax.add_patch(el)
