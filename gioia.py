@@ -18,7 +18,6 @@ from matplotlib.patches import FancyBboxPatch, Ellipse, PathPatch
 from matplotlib.path import Path
 from matplotlib.patheffects import withSimplePatchShadow
 from matplotlib.textpath import TextPath
-from matplotlib.transforms import IdentityTransform
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +113,6 @@ def draw(dims, out_path):
     PANEL_PAD = 1.5
 
     BOX_PAD_X = 1.2                  # horizontal text inset (axis units)
-    LINE_H = 2.1                     # per text line height (axis units)
     BLOCK_GAP = 1.6                  # vertical gap between theme-blocks
     DIM_GAP = 3.0                    # extra gap between dimension groups
     TOP_MARGIN = 6.0                 # below headings
@@ -124,6 +122,13 @@ def draw(dims, out_path):
     FS_THEME = 9.0
     FS_DIM = 9.5
     FS_HEAD = 12.0
+
+    LINE_SPACING = 1.2               # multiple of font size
+    PTS_PER_AXIS = FIG_W * 72.0 / 100.0
+    # Per-block line height in axis units (font size * spacing, in points).
+    LH_FOC = FS_FOC * LINE_SPACING / PTS_PER_AXIS
+    LH_THEME = FS_THEME * LINE_SPACING / PTS_PER_AXIS
+    LH_DIM = FS_DIM * LINE_SPACING / PTS_PER_AXIS
 
     GREY_PANEL = "#e6e6e6"
     SHADOW = withSimplePatchShadow(offset=(2, -2), alpha=0.35)
@@ -138,10 +143,11 @@ def draw(dims, out_path):
     # The x-axis spans 100 units over FIG_W inches (= FIG_W * 72 points).
     # Convert an available axis-x width into points so wrap() (which measures
     # glyphs in points via TextPath) is unit-consistent -> no bleed.
-    PTS_PER_AXIS_X = FIG_W * 72.0 / 100.0
-
     def text_budget_pts(panel_w_axis, pad_axis):
-        return (panel_w_axis - 2 * pad_axis) * PTS_PER_AXIS_X
+        return (panel_w_axis - 2 * pad_axis) * PTS_PER_AXIS
+
+    def pts_to_axis(pts):
+        return pts / PTS_PER_AXIS
 
     foc_text_pts = text_budget_pts(P1_W, BOX_PAD_X)
     theme_text_pts = text_budget_pts(P2_W, BOX_PAD_X)
@@ -162,8 +168,8 @@ def draw(dims, out_path):
                 foc_lines.extend(wrap(label, FS_FOC, "normal", foc_text_pts))
             theme_lines = wrap(theme, FS_THEME, "bold", theme_text_pts)
 
-            h_foc = len(foc_lines) * LINE_H + 1.6
-            h_theme = len(theme_lines) * LINE_H + 1.6
+            h_foc = len(foc_lines) * LH_FOC + 1.6
+            h_theme = len(theme_lines) * LH_THEME + 1.6
             h = max(h_foc, h_theme)   # equal height rule
             dim_blocks.append({
                 "theme": theme,
@@ -173,6 +179,60 @@ def draw(dims, out_path):
             })
         blocks.append({"dim": dim, "theme_blocks": dim_blocks})
 
+    # ---- Tighten panel 1 to the widest first-order line actually present ----
+    all_foc_lines = [ln for grp in blocks for b in grp["theme_blocks"]
+                     for ln in b["foc_lines"]]
+    widest_foc_pts = max((_text_width_pts(ln, FS_FOC, "normal")
+                          for ln in all_foc_lines), default=0.0)
+    needed_p1 = pts_to_axis(widest_foc_pts) + 2 * BOX_PAD_X
+    P1_W = min(P1_W, max(needed_p1, 8.0))   # never widen beyond original
+
+    # ---- Tighten panel 2: re-wrap themes to the narrowest width that still
+    #      keeps every theme within a small line budget, then fit content. ----
+    def rewrap_themes(target_pts):
+        return {b["theme"]: wrap(b["theme"], FS_THEME, "bold", target_pts)
+                for grp in blocks for b in grp["theme_blocks"]}
+
+    MAX_THEME_LINES = 3
+    best_p2 = P2_W
+    # Try progressively narrower panel-2 widths.
+    for cand in [P2_W - d for d in range(0, int(P2_W) - 8)]:
+        cand_pts = text_budget_pts(cand, BOX_PAD_X)
+        wrapped = rewrap_themes(cand_pts)
+        if any(len(v) > MAX_THEME_LINES for v in wrapped.values()):
+            break
+        # ensure the widest resulting line still fits this candidate width
+        widest = max(_text_width_pts(ln, FS_THEME, "bold")
+                     for v in wrapped.values() for ln in v)
+        if pts_to_axis(widest) + 2 * BOX_PAD_X <= cand:
+            best_p2 = cand
+    P2_W = best_p2
+    theme_text_pts = text_budget_pts(P2_W, BOX_PAD_X)
+
+    # Recompute theme line-wrapping and block heights at the final widths.
+    final_theme_lines = rewrap_themes(theme_text_pts)
+    for grp in blocks:
+        for b in grp["theme_blocks"]:
+            b["theme_lines"] = final_theme_lines[b["theme"]]
+            h_foc = len(b["foc_lines"]) * LH_FOC + 1.6
+            h_theme = len(b["theme_lines"]) * LH_THEME + 1.6
+            b["h"] = max(h_foc, h_theme)
+
+    # ---- Reflow panel x-positions so tightened panels stay evenly spaced ----
+    LEFT = 2.0
+    RIGHT = 98.0
+    ARROW_GAP = 8.0           # room between panel 1 and 2 for the grey arrow
+    COL_GAP = 8.0             # room between panel 2 and 3 for connector lines
+    total_w = P1_W + P2_W + P3_W
+    avail = RIGHT - LEFT
+    if total_w + ARROW_GAP + COL_GAP > avail:
+        # Shrink gaps proportionally if content is wide.
+        slack = max(avail - total_w, 4.0)
+        ARROW_GAP = COL_GAP = slack / 2
+    P1_X = LEFT
+    P2_X = P1_X + P1_W + ARROW_GAP
+    P3_X = P2_X + P2_W + COL_GAP
+
     # ---- Compute total content height ----
     total_h = 0.0
     for i, grp in enumerate(blocks):
@@ -181,11 +241,8 @@ def draw(dims, out_path):
         total_h += DIM_GAP
     total_h += TOP_MARGIN + BOTTOM_MARGIN
 
-    # set y-limits and refine figure height to keep boxes square-ish
+    # set y-limits; keep axis units square (1 x-unit == 1 y-unit in inches)
     ax.set_ylim(0, total_h)
-    fig_h = FIG_W * (total_h / 100.0) * (100.0 / 100.0)
-    # scale figure height proportional to content
-    fig_h = FIG_W * total_h / (P1_W + P2_W + P3_W + 20)
     fig_h = max(6.0, total_h * FIG_W / 100.0)
     fig.set_size_inches(FIG_W, fig_h)
 
@@ -203,7 +260,7 @@ def draw(dims, out_path):
                 zorder=5)
 
     # ---- Helper: rounded box with wrapped text (centered or left-aligned) ----
-    def box(x, y_top, w, h, lines, fontsize, weight, align="center"):
+    def box(x, y_top, w, h, lines, fontsize, weight, line_h, align="center"):
         p = FancyBboxPatch(
             (x, y_top - h), w, h,
             boxstyle="round,pad=0,rounding_size=0.6",
@@ -211,14 +268,14 @@ def draw(dims, out_path):
         p.set_path_effects([SHADOW])
         ax.add_patch(p)
         cy = y_top - h / 2
-        block_h = len(lines) * LINE_H
-        start = cy + block_h / 2 - LINE_H / 2
+        block_h = len(lines) * line_h
+        start = cy + block_h / 2 - line_h / 2
         if align == "left":
             tx, ha = x + BOX_PAD_X, "left"
         else:
             tx, ha = x + w / 2, "center"
         for k, ln in enumerate(lines):
-            ax.text(tx, start - k * LINE_H, ln, ha=ha, va="center",
+            ax.text(tx, start - k * line_h, ln, ha=ha, va="center",
                     fontsize=fontsize, fontweight=weight, zorder=4)
         return (x, y_top - h, w, h)  # x, y_bottom, w, h
 
@@ -249,9 +306,10 @@ def draw(dims, out_path):
             top = y
             # first-order concept box (panel 1) — left-aligned text
             box(P1_X, top, P1_W, h, b["foc_lines"], FS_FOC, "normal",
-                align="left")
+                LH_FOC, align="left")
             # second-order theme box (panel 2)
-            box(P2_X, top, P2_W, h, b["theme_lines"], FS_THEME, "bold")
+            box(P2_X, top, P2_W, h, b["theme_lines"], FS_THEME, "bold",
+                LH_THEME)
             # grey arrow from panel1 -> panel2
             grey_arrow(P1_X + P1_W + 0.5, top - h / 2, P2_X - 0.5)
             theme_y_centers.append(top - h / 2)
@@ -269,12 +327,13 @@ def draw(dims, out_path):
 
     # ---- Draw aggregate dimension ovals + connectors ----
     # All ovals share one width and one height for visual consistency.
+    dim_text_pts = text_budget_pts(P3_W, BOX_PAD_X + 2.5)
     dim_line_map = {dim: wrap(dim, FS_DIM, "bold", dim_text_pts)
                     for (dim, _, _) in dim_centers}
     OVAL_W = P3_W - 1.0
     # Height accommodates the wordiest label; kept identical for every oval.
     max_dim_lines = max(len(lines) for lines in dim_line_map.values())
-    oval_h = max(max_dim_lines * LINE_H + 4.0, 8.0)
+    oval_h = max(max_dim_lines * LH_DIM + 4.0, 8.0)
 
     for (dim, dim_cy, theme_y_centers), grp in zip(dim_centers, blocks):
         dim_lines = dim_line_map[dim]
@@ -283,10 +342,10 @@ def draw(dims, out_path):
                      facecolor="black", edgecolor="black", zorder=3)
         el.set_path_effects([SHADOW])
         ax.add_patch(el)
-        block_h = len(dim_lines) * LINE_H
-        start = dim_cy + block_h / 2 - LINE_H / 2
+        block_h = len(dim_lines) * LH_DIM
+        start = dim_cy + block_h / 2 - LH_DIM / 2
         for k, ln in enumerate(dim_lines):
-            ax.text(cx, start - k * LINE_H, ln, ha="center", va="center",
+            ax.text(cx, start - k * LH_DIM, ln, ha="center", va="center",
                     color="white", fontsize=FS_DIM, fontweight="bold", zorder=4)
         # connectors: theme right edge -> oval left edge
         for ty in theme_y_centers:
