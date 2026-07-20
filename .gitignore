@@ -1,0 +1,6 @@
+__pycache__
+.venv
+
+# Testing inputs and outputs
+input.csv
+output.pdf
