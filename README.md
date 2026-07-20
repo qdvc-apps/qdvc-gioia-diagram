@@ -1,28 +1,8 @@
 # qdvc-gioia-diagram
 
-Generate a **Gioia-style data structure diagram** (Gioia, Corley & Hamilton, 2013) from
-a simple three-column CSV.
+Generate a **Gioia-style data structure diagram** (Gioia, Corley & Hamilton, 2013) from a simple three-column CSV. The tool lays your data out as the familiar three-panel figure — first-order concepts on the left, feeding through a large grey arrow into second-order themes in the middle, which connect to aggregate-dimension ovals on the right — handling text wrapping, box sizing, alignment, and spacing automatically, and exporting to PDF, PNG, SVG, or any other format matplotlib supports. **QDVC = Quick and Dirty, Vibe-Coded:** it was built rapidly and conversationally with an AI assistant rather than through a formal engineering process, so treat it as a handy, deliberately small utility rather than production-grade software (the documentation was vibe-coded too). That said, "vibe-coded" is not an excuse for an undocumented black box: the whole conversational build is recorded in the [`vibe-coding/`](vibe-coding/) folder, where each round preserves the user request, the assistant's response, and the resulting Git commit hash, so the origin stays fully auditable rather than opaque.
 
-The tool lays your data out as the familiar three-panel figure: first-order concepts on
-the left, feeding through a large grey arrow into second-order themes in the middle,
-which connect to aggregate-dimension ovals on the right. Text wrapping, box sizing,
-alignment, and spacing are handled automatically, and it exports to PDF, PNG, SVG, or
-any other format matplotlib supports.
-
-## What "QDVC" means
-
-**QDVC = Quick and Dirty, Vibe-Coded.** This was built rapidly and conversationally with
-an AI assistant rather than through a formal engineering process. It does one job
-reasonably well but is deliberately small in scope — a handy utility, not
-production-grade software. The documentation (this README and the maintenance guide) was
-vibe-coded too.
-
-"Vibe-coded" is not an excuse for an undocumented black box, though. The whole
-conversational build is recorded in the [`vibe-coding/`](vibe-coding/) folder: each
-round preserves the user request, the assistant's response, and the resulting Git commit
-hash, so the "quick and dirty" origin stays fully auditable rather than opaque.
-
-## Installation
+## Installation and usage
 
 Requires Python 3 and matplotlib:
 
@@ -30,7 +10,7 @@ Requires Python 3 and matplotlib:
 pip install -r requirements.txt
 ```
 
-## Usage
+Run it with an input CSV and an output filename (the format is inferred from the extension):
 
 ```bash
 python gioia.py INPUT.csv OUTPUT.pdf [options]
@@ -42,9 +22,7 @@ The input CSV must have exactly these three columns:
 first_order_concept,second_order_theme,aggregate_dimension
 ```
 
-The hierarchy is many-to-one at each level: many first-order concepts belong to one
-second-order theme, and many themes belong to one aggregate dimension. Row order is
-preserved top-to-bottom, and the output format is inferred from the file extension.
+The hierarchy is many-to-one at each level: many first-order concepts belong to one second-order theme, and many themes belong to one aggregate dimension. Row order is preserved top-to-bottom.
 
 | Option | Description |
 | --- | --- |
@@ -52,15 +30,13 @@ preserved top-to-bottom, and the output format is inferred from the file extensi
 | `-v`, `--verbose` | Print timed progress messages while the diagram is built. |
 | `-h`, `--help` | Show usage help. |
 
-## Try it out
-
-A sample dataset, [`example.csv`](example.csv), is included. Generate a diagram with:
+A sample dataset, [`example.csv`](example.csv), is included. Try it with:
 
 ```bash
 python gioia.py example.csv example.pdf
 ```
 
-or try the monospace-enumeration variant with progress output:
+or, for the monospace-enumeration variant with progress output:
 
 ```bash
 python gioia.py example.csv example.png --mono-enum --verbose
