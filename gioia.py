@@ -81,11 +81,13 @@ def _hard_break_word(word, fontsize, weight, max_pts, family=None):
     return pieces
 
 
-def wrap(text, fontsize, weight, max_pts, family=None):
+def wrap(text, fontsize, weight, max_pts, family=None, first_max_pts=None):
     """Greedy word wrap to a width given in points. Returns list of lines.
 
     Words wider than max_pts are hard-broken so text never bleeds outside
-    its container.
+    its container. If ``first_max_pts`` is given, the first line is wrapped to
+    that (typically narrower) width and subsequent lines to ``max_pts`` — used
+    for hanging indents where an enumeration prefix occupies the first line.
     """
     words = text.split()
     if not words:
@@ -101,7 +103,9 @@ def wrap(text, fontsize, weight, max_pts, family=None):
     lines, cur = [], tokens[0]
     for w in tokens[1:]:
         trial = cur + " " + w
-        if _text_width_pts(trial, fontsize, weight, family) <= max_pts:
+        limit = first_max_pts if (first_max_pts is not None and not lines) \
+            else max_pts
+        if _text_width_pts(trial, fontsize, weight, family) <= limit:
             cur = trial
         else:
             lines.append(cur)
@@ -113,6 +117,32 @@ def wrap(text, fontsize, weight, max_pts, family=None):
 def letters(i):
     """0->A, 1->B ... cycles A..Z."""
     return chr(ord("A") + (i % 26))
+
+
+def wrap_enumerated(prefix, body, fontsize, weight, max_pts,
+                    prefix_family=None, body_family=None):
+    """Wrap an enumerated concept, keeping the prefix in its own font.
+
+    ``prefix`` (e.g. "1A. ") is rendered in ``prefix_family`` and the concept
+    ``body`` in ``body_family``. Returns a list of visual lines; each line is
+    ``(indent_pts, runs)`` where ``runs`` is a list of ``(text, family)`` and
+    ``indent_pts`` is the left hanging indent (0 for the first line, the prefix
+    width for continuation lines so body text stays aligned under itself).
+
+    ``max_pts`` is the full text width available inside the box.
+    """
+    prefix_pts = _text_width_pts(prefix, fontsize, weight, prefix_family)
+    # First line has less room (prefix sits before the body); continuation
+    # lines hang-indent by the prefix width and use the full remaining width.
+    body_lines = wrap(body, fontsize, weight, max_pts - prefix_pts,
+                      body_family, first_max_pts=max_pts - prefix_pts)
+    lines = []
+    for k, bl in enumerate(body_lines):
+        if k == 0:
+            lines.append((0.0, [(prefix, prefix_family), (bl, body_family)]))
+        else:
+            lines.append((prefix_pts, [(bl, body_family)]))
+    return lines
 
 
 class Progress:
@@ -207,12 +237,14 @@ def draw(dims, out_path, mono_enum=False, progress=None):
         dim_blocks = []
         for theme, concepts in themes.items():
             theme_seq += 1
-            # first-order concept lines with enumeration
+            # first-order concept lines: enumeration prefix in ENUM_FAMILY,
+            # concept body always in the proportional font.
             foc_lines = []
             for j, c in enumerate(concepts):
-                label = f"{theme_seq}{letters(j)}. {c}"
+                prefix = f"{theme_seq}{letters(j)}. "
                 foc_lines.extend(
-                    wrap(label, FS_FOC, "normal", foc_text_pts, ENUM_FAMILY))
+                    wrap_enumerated(prefix, c, FS_FOC, "normal", foc_text_pts,
+                                    prefix_family=ENUM_FAMILY, body_family=None))
             theme_lines = wrap(theme, FS_THEME, "bold", theme_text_pts)
 
             h_foc = len(foc_lines) * LH_FOC + 1.6
@@ -228,10 +260,17 @@ def draw(dims, out_path, mono_enum=False, progress=None):
 
     # ---- Tighten panel 1 to the widest first-order line actually present ----
     progress("Tightening panel 1 width...")
+
+    def rich_line_width_pts(line):
+        """Total rendered width (pts) of a rich line: indent + all runs."""
+        indent, runs = line
+        return indent + sum(_text_width_pts(t, FS_FOC, "normal", fam)
+                            for (t, fam) in runs)
+
     all_foc_lines = [ln for grp in blocks for b in grp["theme_blocks"]
                      for ln in b["foc_lines"]]
-    widest_foc_pts = max((_text_width_pts(ln, FS_FOC, "normal", ENUM_FAMILY)
-                          for ln in all_foc_lines), default=0.0)
+    widest_foc_pts = max((rich_line_width_pts(ln) for ln in all_foc_lines),
+                         default=0.0)
     needed_p1 = pts_to_axis(widest_foc_pts) + 2 * BOX_PAD_X + BOX_PAD_R_EXTRA
     P1_W = min(P1_W, max(needed_p1, 8.0))   # never widen beyond original
 
@@ -332,7 +371,7 @@ def draw(dims, out_path, mono_enum=False, progress=None):
 
     # ---- Helper: rounded box with wrapped text (centered or left-aligned) ----
     def box(x, y_top, w, h, lines, fontsize, weight, line_h, align="center",
-            family=None):
+            family=None, rich=False):
         p = FancyBboxPatch(
             (x, y_top - h), w, h,
             boxstyle="round,pad=0,rounding_size=0.6",
@@ -342,6 +381,20 @@ def draw(dims, out_path, mono_enum=False, progress=None):
         cy = y_top - h / 2
         block_h = len(lines) * line_h
         start = cy + block_h / 2 - line_h / 2
+        if rich:
+            # Each line is (indent_pts, [(text, family), ...]); draw left-aligned,
+            # laying runs out left-to-right in their own fonts.
+            x0 = x + BOX_PAD_X
+            for k, (indent_pts, runs) in enumerate(lines):
+                yk = start - k * line_h
+                cursor = x0 + indent_pts / PTS_PER_AXIS
+                for (text, fam) in runs:
+                    ax.text(cursor, yk, text, ha="left", va="center",
+                            fontsize=fontsize, fontweight=weight, family=fam,
+                            zorder=4)
+                    cursor += _text_width_pts(text, fontsize, weight, fam) \
+                        / PTS_PER_AXIS
+            return (x, y_top - h, w, h)
         if align == "left":
             tx, ha = x + BOX_PAD_X, "left"
         else:
@@ -378,9 +431,9 @@ def draw(dims, out_path, mono_enum=False, progress=None):
         for b in grp["theme_blocks"]:
             h = b["h"]
             top = y
-            # first-order concept box (panel 1) — left-aligned text
+            # first-order concept box (panel 1) — rich left-aligned text
             box(P1_X, top, P1_W, h, b["foc_lines"], FS_FOC, "normal",
-                LH_FOC, align="left", family=ENUM_FAMILY)
+                LH_FOC, align="left", rich=True)
             # second-order theme box (panel 2)
             box(P2_X, top, P2_W, h, b["theme_lines"], FS_THEME, "bold",
                 LH_THEME)
