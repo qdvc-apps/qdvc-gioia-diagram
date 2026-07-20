@@ -133,10 +133,11 @@ def wrap_enumerated(enum, body, fontsize, weight, max_pts,
 
     ``max_pts`` is the full text width available inside the box.
     """
-    # Fixed width consumed by the enumeration column: "1A" + "." + separator.
+    # Fixed width consumed by the enumeration column: "1A" + gap + "." + sep.
     enum_pts = _text_width_pts(enum, fontsize, weight, enum_family)
     dot_pts = _text_width_pts(".", fontsize, weight, body_family)
-    indent_pts = enum_pts + dot_pts + sep_gap_pts   # where body text begins
+    dot_gap_pts = 0.5 * dot_pts   # small breathing space between "1A" and "."
+    indent_pts = enum_pts + dot_gap_pts + dot_pts + sep_gap_pts
 
     body_lines = wrap(body, fontsize, weight, max_pts - indent_pts,
                       body_family, first_max_pts=max_pts - indent_pts)
@@ -145,7 +146,7 @@ def wrap_enumerated(enum, body, fontsize, weight, max_pts,
         if k == 0:
             lines.append((0.0, [
                 (enum, enum_family, 0.0),
-                (".", body_family, 0.0),
+                (".", body_family, dot_gap_pts),
                 (bl, body_family, sep_gap_pts),
             ]))
         else:
