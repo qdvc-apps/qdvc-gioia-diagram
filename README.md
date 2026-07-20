@@ -1,6 +1,14 @@
 # qdvc-gioia-diagram
 
-Generate a **Gioia-style data structure diagram** (Gioia, Corley & Hamilton, 2013) from a simple three-column CSV. The tool lays your data out as the familiar three-panel figure — first-order concepts on the left, feeding through a large grey arrow into second-order themes in the middle, which connect to aggregate-dimension ovals on the right — handling text wrapping, box sizing, alignment, and spacing automatically, and exporting to PDF, PNG, SVG, or any other format matplotlib supports. **QDVC = Quick and Dirty, Vibe-Coded:** it was built rapidly and conversationally with an AI assistant rather than through a formal engineering process, so treat it as a handy, deliberately small utility rather than production-grade software (the documentation was vibe-coded too). That said, "vibe-coded" is not an excuse for an undocumented black box: the whole conversational build is recorded in the [`vibe-coding/`](vibe-coding/) folder, where each round preserves the user request, the assistant's response, and the resulting Git commit hash, so the origin stays fully auditable rather than opaque.
+Generate a **Gioia-style data structure diagram** (Gioia, Corley & Hamilton, 2013) from a simple three-column CSV.
+
+Here's what `python3 gioia.py -m -v example/example.csv example/example.pdf` turns our [example.csv](example/example.csv) into:
+
+![Example](example/example.png)
+
+(Full PDF version [here](example/example.pdf).)
+
+**QDVC = Quick and Dirty, Vibe-Coded:** it was built rapidly and conversationally with an AI assistant rather than through a formal engineering process, so treat it as a handy, deliberately small utility rather than production-grade software (the documentation was vibe-coded too). That said, "vibe-coded" is not an excuse for an undocumented black box: the whole conversational build is recorded in the [`vibe-coding/`](vibe-coding/) folder, where each round preserves the user request, the assistant's response, and the resulting Git commit hash, so the origin stays fully auditable rather than opaque.
 
 ## Installation and usage
 
@@ -30,16 +38,16 @@ The hierarchy is many-to-one at each level: many first-order concepts belong to 
 | `-v`, `--verbose` | Print timed progress messages while the diagram is built. |
 | `-h`, `--help` | Show usage help. |
 
-A sample dataset, [`example.csv`](example.csv), is included. Try it with:
+A sample dataset, [`example.csv`](example/example.csv), is included. Try it with:
 
 ```bash
-python gioia.py example.csv example.pdf
+python gioia.py example/example.csv example/example.pdf
 ```
 
 or, for the monospace-enumeration variant with progress output:
 
 ```bash
-python gioia.py example.csv example.png --mono-enum --verbose
+python gioia.py example/example.csv example/example.png --mono-enum --verbose
 ```
 
 ## Background and a caveat
