@@ -43,15 +43,27 @@ def load(csv_path):
 # ---------------------------------------------------------------------------
 # Text wrapping helpers (measure with matplotlib for accuracy)
 # ---------------------------------------------------------------------------
+# Measuring glyph widths via TextPath is accurate but slow, and the panel-2
+# width search re-measures the same strings many times. Cache by the exact
+# arguments that affect width so repeated measurements are effectively free.
+_WIDTH_CACHE = {}
+
+
 def _text_width_pts(s, fontsize, weight, family=None):
     """Width of a string in points (TextPath size is in points)."""
     if not s:
         return 0.0
+    key = (s, fontsize, weight, family)
+    cached = _WIDTH_CACHE.get(key)
+    if cached is not None:
+        return cached
     prop = {"weight": weight}
     if family:
         prop["family"] = family
     tp = TextPath((0, 0), s, size=fontsize, prop=prop)
-    return tp.get_extents().width
+    width = tp.get_extents().width
+    _WIDTH_CACHE[key] = width
+    return width
 
 
 def _hard_break_word(word, fontsize, weight, max_pts, family=None):
@@ -133,7 +145,11 @@ def draw(dims, out_path, mono_enum=False, progress=None):
     P1_X, P1_W = 2.0, 34.0           # first-order concepts panel
     P2_X, P2_W = 44.0, 22.0          # second-order themes panel
     P3_X, P3_W = 74.0, 22.0          # aggregate dimensions panel
-    PANEL_PAD = 3.0                  # horizontal padding inside grey panels
+    PANEL_PAD = 3.0                  # default horizontal padding inside panels
+    # Panel 2 gets extra left padding so the arrowhead has clean grey space to
+    # cross into and its tip meets the box edge without an awkward corner gap.
+    PANEL_PAD_L = [PANEL_PAD, PANEL_PAD + 2.5, PANEL_PAD]
+    PANEL_PAD_R = [PANEL_PAD, PANEL_PAD, PANEL_PAD]
 
     BOX_PAD_X = 1.2                  # horizontal text inset (axis units)
     BLOCK_GAP = 1.6                  # vertical gap between theme-blocks
@@ -225,20 +241,31 @@ def draw(dims, out_path, mono_enum=False, progress=None):
         return {b["theme"]: wrap(b["theme"], FS_THEME, "bold", target_pts)
                 for grp in blocks for b in grp["theme_blocks"]}
 
+    all_themes = list({b["theme"] for grp in blocks
+                       for b in grp["theme_blocks"]})
+
     MAX_THEME_LINES = 3
     best_p2 = P2_W
-    progress("Tightening panel 2 width (re-wrapping themes)...")
+    candidates = [P2_W - d for d in range(0, int(P2_W) - 8)]
+    progress(f"Tightening panel 2 width (testing {len(candidates)} "
+             f"candidate widths, re-wrapping {len(all_themes)} themes each)...")
     # Try progressively narrower panel-2 widths.
-    for cand in [P2_W - d for d in range(0, int(P2_W) - 8)]:
+    for idx, cand in enumerate(candidates, 1):
+        progress(f"  panel 2: trying width {cand:.1f} "
+                 f"({idx}/{len(candidates)})...")
         cand_pts = text_budget_pts(cand, BOX_PAD_X)
         wrapped = rewrap_themes(cand_pts)
-        if any(len(v) > MAX_THEME_LINES for v in wrapped.values()):
+        max_lines = max(len(v) for v in wrapped.values())
+        if max_lines > MAX_THEME_LINES:
+            progress(f"  panel 2: width {cand:.1f} needs {max_lines} lines "
+                     f"(> {MAX_THEME_LINES} max); stopping search")
             break
         # ensure the widest resulting line still fits this candidate width
         widest = max(_text_width_pts(ln, FS_THEME, "bold")
                      for v in wrapped.values() for ln in v)
         if pts_to_axis(widest) + 2 * BOX_PAD_X <= cand:
             best_p2 = cand
+    progress(f"  panel 2: selected width {best_p2:.1f}")
     P2_W = best_p2
     theme_text_pts = text_budget_pts(P2_W, BOX_PAD_X)
 
@@ -276,8 +303,8 @@ def draw(dims, out_path, mono_enum=False, progress=None):
     total_h += TOP_MARGIN + BOTTOM_MARGIN
 
     # ---- Content extent (used to set axis limits so margins stay uniform) ----
-    content_left = P1_X - PANEL_PAD
-    content_right = P3_X + P3_W + PANEL_PAD
+    content_left = P1_X - PANEL_PAD_L[0]
+    content_right = P3_X + P3_W + PANEL_PAD_R[2]
     content_w = content_right - content_left
 
     # Map the axes exactly onto the content so bbox_inches="tight" + pad_inches
@@ -290,15 +317,16 @@ def draw(dims, out_path, mono_enum=False, progress=None):
     fig.set_size_inches(fig_w, fig_h)
 
     # ---- Panels ----
-    panels = [
-        (P1_X - PANEL_PAD, P1_W + 2 * PANEL_PAD, "First-order concepts"),
-        (P2_X - PANEL_PAD, P2_W + 2 * PANEL_PAD, "Second-order themes"),
-        (P3_X - PANEL_PAD, P3_W + 2 * PANEL_PAD, "Aggregate dimensions"),
-    ]
-    for px, pw, head in panels:
+    panel_x = [P1_X, P2_X, P3_X]
+    panel_w = [P1_W, P2_W, P3_W]
+    panel_heads = ["First-order concepts", "Second-order themes",
+                   "Aggregate dimensions"]
+    for i in range(3):
+        px = panel_x[i] - PANEL_PAD_L[i]
+        pw = panel_w[i] + PANEL_PAD_L[i] + PANEL_PAD_R[i]
         ax.add_patch(plt.Rectangle((px, 0), pw, total_h,
                                    facecolor=GREY_PANEL, edgecolor="none", zorder=0))
-        ax.text(px + pw / 2, total_h - TOP_MARGIN / 2 + 1.0, head,
+        ax.text(px + pw / 2, total_h - TOP_MARGIN / 2 + 1.0, panel_heads[i],
                 ha="center", va="center", fontsize=FS_HEAD, fontweight="bold",
                 zorder=5)
 
