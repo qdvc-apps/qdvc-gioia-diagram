@@ -3,4 +3,5 @@ __pycache__
 
 # Testing inputs and outputs
 input.csv
+.~lock.input.csv#
 output.pdf
