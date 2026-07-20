@@ -119,29 +119,37 @@ def letters(i):
     return chr(ord("A") + (i % 26))
 
 
-def wrap_enumerated(prefix, body, fontsize, weight, max_pts,
-                    prefix_family=None, body_family=None):
-    """Wrap an enumerated concept, keeping the prefix in its own font.
+def wrap_enumerated(enum, body, fontsize, weight, max_pts,
+                    enum_family=None, body_family=None, sep_gap_pts=0.0):
+    """Wrap an enumerated concept as font-tagged runs with a clean separator.
 
-    ``prefix`` (e.g. "1A. ") is rendered in ``prefix_family`` and the concept
-    ``body`` in ``body_family``. Returns a list of visual lines; each line is
-    ``(indent_pts, runs)`` where ``runs`` is a list of ``(text, family)`` and
-    ``indent_pts`` is the left hanging indent (0 for the first line, the prefix
-    width for continuation lines so body text stays aligned under itself).
+    ``enum`` (e.g. "1A") is rendered in ``enum_family``; a "." follows in the
+    body font, then a fixed ``sep_gap_pts`` of space, then the concept ``body``
+    in ``body_family``. Returns visual lines as ``(indent_pts, runs)`` where
+    ``runs`` is a list of ``(text, family, pre_gap_pts)`` — ``pre_gap_pts`` is
+    extra horizontal space inserted *before* that run. Continuation lines
+    hang-indent so body text stays aligned under the first body line (not under
+    the enumeration).
 
     ``max_pts`` is the full text width available inside the box.
     """
-    prefix_pts = _text_width_pts(prefix, fontsize, weight, prefix_family)
-    # First line has less room (prefix sits before the body); continuation
-    # lines hang-indent by the prefix width and use the full remaining width.
-    body_lines = wrap(body, fontsize, weight, max_pts - prefix_pts,
-                      body_family, first_max_pts=max_pts - prefix_pts)
+    # Fixed width consumed by the enumeration column: "1A" + "." + separator.
+    enum_pts = _text_width_pts(enum, fontsize, weight, enum_family)
+    dot_pts = _text_width_pts(".", fontsize, weight, body_family)
+    indent_pts = enum_pts + dot_pts + sep_gap_pts   # where body text begins
+
+    body_lines = wrap(body, fontsize, weight, max_pts - indent_pts,
+                      body_family, first_max_pts=max_pts - indent_pts)
     lines = []
     for k, bl in enumerate(body_lines):
         if k == 0:
-            lines.append((0.0, [(prefix, prefix_family), (bl, body_family)]))
+            lines.append((0.0, [
+                (enum, enum_family, 0.0),
+                (".", body_family, 0.0),
+                (bl, body_family, sep_gap_pts),
+            ]))
         else:
-            lines.append((prefix_pts, [(bl, body_family)]))
+            lines.append((indent_pts, [(bl, body_family, 0.0)]))
     return lines
 
 
@@ -200,8 +208,13 @@ def draw(dims, out_path, mono_enum=False, progress=None):
     LH_DIM = FS_DIM * LINE_SPACING / PTS_PER_AXIS
 
     # Extra inset on the right edge of panel-1 boxes (~one lowercase 'm').
-    em_pts = _text_width_pts("m", FS_FOC, "normal", ENUM_FAMILY)
+    # The concept body (proportional font) reaches the right edge, so measure
+    # the em in that font.
+    em_pts = _text_width_pts("m", FS_FOC, "normal", None)
     BOX_PAD_R_EXTRA = em_pts / PTS_PER_AXIS   # axis units
+
+    # Gap between the enumeration ("1A.") and the concept name (~half an em).
+    ENUM_SEP_PTS = 0.5 * em_pts
 
     GREY_PANEL = "#e6e6e6"
     SHADOW = withSimplePatchShadow(offset=(2, -2), alpha=0.35)
@@ -237,14 +250,15 @@ def draw(dims, out_path, mono_enum=False, progress=None):
         dim_blocks = []
         for theme, concepts in themes.items():
             theme_seq += 1
-            # first-order concept lines: enumeration prefix in ENUM_FAMILY,
-            # concept body always in the proportional font.
+            # first-order concept lines: enumeration ("1A") in ENUM_FAMILY,
+            # concept body always in the proportional font, separated cleanly.
             foc_lines = []
             for j, c in enumerate(concepts):
-                prefix = f"{theme_seq}{letters(j)}. "
+                enum = f"{theme_seq}{letters(j)}"
                 foc_lines.extend(
-                    wrap_enumerated(prefix, c, FS_FOC, "normal", foc_text_pts,
-                                    prefix_family=ENUM_FAMILY, body_family=None))
+                    wrap_enumerated(enum, c, FS_FOC, "normal", foc_text_pts,
+                                    enum_family=ENUM_FAMILY, body_family=None,
+                                    sep_gap_pts=ENUM_SEP_PTS))
             theme_lines = wrap(theme, FS_THEME, "bold", theme_text_pts)
 
             h_foc = len(foc_lines) * LH_FOC + 1.6
@@ -262,10 +276,11 @@ def draw(dims, out_path, mono_enum=False, progress=None):
     progress("Tightening panel 1 width...")
 
     def rich_line_width_pts(line):
-        """Total rendered width (pts) of a rich line: indent + all runs."""
+        """Total rendered width (pts) of a rich line: indent + gaps + all runs."""
         indent, runs = line
-        return indent + sum(_text_width_pts(t, FS_FOC, "normal", fam)
-                            for (t, fam) in runs)
+        return indent + sum(pre_gap
+                            + _text_width_pts(t, FS_FOC, "normal", fam)
+                            for (t, fam, pre_gap) in runs)
 
     all_foc_lines = [ln for grp in blocks for b in grp["theme_blocks"]
                      for ln in b["foc_lines"]]
@@ -321,14 +336,22 @@ def draw(dims, out_path, mono_enum=False, progress=None):
     progress("Laying out panels...")
     LEFT = 2.0
     RIGHT = 98.0
-    ARROW_GAP = 8.0           # room between panel 1 and 2 for the grey arrow
-    COL_GAP = 8.0             # room between panel 2 and 3 for connector lines
+    # Target visible gap between the grey panel backgrounds. The box-to-box
+    # gaps must add back each panel's padding so the *grey* gaps come out equal
+    # on both sides (grey edges sit PANEL_PAD beyond the boxes).
+    GREY_GAP = 5.0
+    ARROW_GAP = GREY_GAP + PANEL_PAD_R[0] + PANEL_PAD_L[1]   # panel1 -> panel2
+    COL_GAP = GREY_GAP + PANEL_PAD_R[1] + PANEL_PAD_L[2]     # panel2 -> panel3
     total_w = P1_W + P2_W + P3_W
     avail = RIGHT - LEFT
     if total_w + ARROW_GAP + COL_GAP > avail:
-        # Shrink gaps proportionally if content is wide.
-        slack = max(avail - total_w, 4.0)
-        ARROW_GAP = COL_GAP = slack / 2
+        # Content is wide: shrink the shared grey gap (keep it non-negative).
+        slack = max(avail - total_w
+                    - (PANEL_PAD_R[0] + PANEL_PAD_L[1])
+                    - (PANEL_PAD_R[1] + PANEL_PAD_L[2]), 0.0)
+        GREY_GAP = slack / 2
+        ARROW_GAP = GREY_GAP + PANEL_PAD_R[0] + PANEL_PAD_L[1]
+        COL_GAP = GREY_GAP + PANEL_PAD_R[1] + PANEL_PAD_L[2]
     P1_X = LEFT
     P2_X = P1_X + P1_W + ARROW_GAP
     P3_X = P2_X + P2_W + COL_GAP
@@ -382,13 +405,15 @@ def draw(dims, out_path, mono_enum=False, progress=None):
         block_h = len(lines) * line_h
         start = cy + block_h / 2 - line_h / 2
         if rich:
-            # Each line is (indent_pts, [(text, family), ...]); draw left-aligned,
-            # laying runs out left-to-right in their own fonts.
+            # Each line is (indent_pts, [(text, family, pre_gap_pts), ...]);
+            # draw left-aligned, laying runs left-to-right in their own fonts,
+            # inserting pre_gap_pts of space before a run where requested.
             x0 = x + BOX_PAD_X
             for k, (indent_pts, runs) in enumerate(lines):
                 yk = start - k * line_h
                 cursor = x0 + indent_pts / PTS_PER_AXIS
-                for (text, fam) in runs:
+                for (text, fam, pre_gap) in runs:
+                    cursor += pre_gap / PTS_PER_AXIS
                     ax.text(cursor, yk, text, ha="left", va="center",
                             fontsize=fontsize, fontweight=weight, family=fam,
                             zorder=4)
